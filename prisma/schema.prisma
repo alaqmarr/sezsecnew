@@ -1,0 +1,410 @@
+// SEZSEC Shabab Ul Eidiz Zahabi — Members, Finance, Attendance & Community Portal SQLite Schema
+// Companion to sezinv (jamatevents on 127.0.0.1:3333) — communicates via internal server-to-server bridge.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ----------------------------------------------------------------------
+// Enums
+// ----------------------------------------------------------------------
+
+enum Role {
+  ADMIN
+  ADMIN_CUSTOM
+  MANAGER
+  STAFF
+  WATCHER
+  USER
+}
+
+enum ProfileStatus {
+  COMPLETED
+  SKIPPED
+}
+
+enum FeeStatus {
+  PENDING
+  PARTIAL
+  PAID
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  EXCUSED
+}
+
+// ----------------------------------------------------------------------
+// Users, Hierarchy & Access Control
+// ----------------------------------------------------------------------
+
+model User {
+  id            String         @id @default(cuid())
+  username      String         @unique
+  password      String
+  email         String?
+  mobile        String?
+  name          String?
+  role          Role           @default(USER)
+  profileStatus ProfileStatus?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  // Jamaat Member Profile Details
+  its           String?        @unique
+  dob           DateTime?
+  quranHifz     String?
+  passport      String?
+  kunSafar      String?
+  occupation    String?
+  sports        String?
+
+  // Leadership Hierarchy
+  headedById    String?
+  headedBy      User?          @relation("UserHeads", fields: [headedById], references: [id], onDelete: SetNull)
+  usersGuided   User[]         @relation("UserHeads")
+
+  // Module-based RBAC
+  moduleAccess       UserModuleAccess[]
+
+  // Financial & Contribution Records
+  feeConfig          UserFeeConfig?
+  feeRecords         FeeRecord[]
+  eventContributions EventContribution[]
+  feeTransactions    FeeTransaction[]
+
+  // Floor Assignments
+  floorHeadOf    FloorConfig[] @relation("FloorHeads")
+  floorSubHeadOf FloorConfig[] @relation("FloorSubHeads")
+  floorMemberOf  FloorConfig[] @relation("FloorMembers")
+
+  // Attendance
+  attendanceRecords AttendanceRecord[] @relation("Attendee")
+  attendanceMarked  AttendanceRecord[] @relation("Marker")
+
+  @@index([headedById])
+  @@index([role])
+  @@map("users")
+}
+
+model Module {
+  id          String   @id
+  name        String   @unique
+  description String?
+  icon        String?
+  createdAt   DateTime @default(now())
+
+  links       ModuleLink[]
+  userAccess  UserModuleAccess[]
+
+  @@map("modules")
+}
+
+model ModuleLink {
+  id        String  @id @default(cuid())
+  moduleId  String
+  module    Module  @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  path      String
+  label     String?
+  order     Int     @default(0)
+
+  @@index([moduleId, order])
+  @@map("module_links")
+}
+
+model UserModuleAccess {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  moduleId  String
+  module    Module   @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, moduleId])
+  @@index([moduleId])
+  @@map("user_module_access")
+}
+
+model VerificationCode {
+  id        String   @id @default(cuid())
+  email     String
+  codeHash  String   @map("code")
+  purpose   String   @default("OTP")
+  userId    String?
+  attempts  Int      @default(0)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([email, purpose])
+  @@index([userId, purpose])
+  @@index([expiresAt])
+  @@map("verification_codes")
+}
+
+// ----------------------------------------------------------------------
+// Member Finance, Monthly Contributions & Event Funds
+// ----------------------------------------------------------------------
+
+model UserFeeConfig {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amount    Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@map("user_fee_configs")
+}
+
+model FeeRecord {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  month       Int
+  year        Int
+  amount      Int
+  paidAmount  Int       @default(0)
+  status      FeeStatus @default(PENDING)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  allocations FeeTransactionAllocation[]
+
+  @@unique([userId, month, year])
+  @@index([year, month])
+  @@index([status])
+  @@map("fee_records")
+}
+
+model FeeTransaction {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amount    Int
+  mode      String
+  reference String?
+  note      String?
+  date      DateTime @default(now())
+  createdAt DateTime @default(now())
+
+  allocations FeeTransactionAllocation[]
+
+  @@index([userId, date])
+  @@index([date])
+  @@map("fee_transactions")
+}
+
+model EventContribution {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  amount      Int
+  paidAmount  Int       @default(0)
+  status      FeeStatus @default(PENDING)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  allocations FeeTransactionAllocation[]
+
+  @@index([userId])
+  @@index([title])
+  @@map("event_contributions")
+}
+
+model FeeTransactionAllocation {
+  id                  String             @id @default(cuid())
+  transactionId       String
+  transaction         FeeTransaction     @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  feeRecordId         String?
+  feeRecord           FeeRecord?         @relation(fields: [feeRecordId], references: [id], onDelete: Cascade)
+
+  eventContributionId String?
+  eventContribution   EventContribution? @relation(fields: [eventContributionId], references: [id], onDelete: Cascade)
+
+  allocatedAmount     Int
+
+  @@index([transactionId])
+  @@index([feeRecordId])
+  @@index([eventContributionId])
+  @@map("fee_transaction_allocations")
+}
+
+// ----------------------------------------------------------------------
+// Floor Organization & Live Miqaat Attendance (Hydrated via 127.0.0.1:3333 Bridge)
+// ----------------------------------------------------------------------
+
+model FloorConfig {
+  id          String   @id @default(cuid())
+  name        String   @unique
+
+  heads       User[]   @relation("FloorHeads")
+  subHeads    User[]   @relation("FloorSubHeads")
+  members     User[]   @relation("FloorMembers")
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("floor_configs")
+}
+
+model AttendanceRecord {
+  id          String           @id @default(cuid())
+  eventId     String
+
+  userId      String
+  user        User             @relation("Attendee", fields: [userId], references: [id], onDelete: Cascade)
+
+  markedById  String?
+  markedBy    User?            @relation("Marker", fields: [markedById], references: [id], onDelete: SetNull)
+
+  status      AttendanceStatus @default(PRESENT)
+  timestamp   DateTime         @default(now())
+
+  @@unique([eventId, userId])
+  @@index([eventId])
+  @@index([userId])
+  @@index([markedById])
+  @@map("attendance_records")
+}
+
+model AttendanceEventClone {
+  id          String    @id @default(cuid())
+  eventId     String    @unique
+
+  // Cached snapshot from jamatevents bridge for resilient rendering
+  eventTitle  String?
+  eventDate   DateTime?
+  eventTime   String?
+  eventType   String?
+
+  isActive    Boolean   @default(true)
+  startTime   DateTime
+  endTime     DateTime
+  createdAt   DateTime  @default(now())
+
+  @@index([isActive, startTime, endTime])
+  @@map("attendance_event_clones")
+}
+
+// ----------------------------------------------------------------------
+// Community Portal Content, Applications & System Configuration
+// ----------------------------------------------------------------------
+
+model KhidmatRequest {
+  id        String         @id @default(cuid())
+  miqat     String
+  name      String
+  phone     String
+  date      DateTime
+  status    ApprovalStatus @default(PENDING)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@index([status])
+  @@map("khidmat_requests")
+}
+
+model MemberRegistration {
+  id          String         @id @default(cuid())
+  title       String
+  name        String
+  its         String         @unique
+  email       String
+  dob         DateTime
+  phone       String
+  quranHifz   String
+  passport    String
+  kunSafar    String
+  occupation  String
+  sports      String
+  status      ApprovalStatus @default(PENDING)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([status])
+  @@map("member_registrations")
+}
+
+model Blog {
+  id          String   @id @default(cuid())
+  title       String
+  content     String
+  author      String
+  publishedAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([publishedAt])
+  @@map("blogs")
+}
+
+model Banner {
+  id              String    @id @default(cuid())
+  imageUrl        String
+  href            String?
+  isActive        Boolean   @default(false)
+  countdownTarget DateTime?
+  countdownLabel  String?
+  x               Float?    @default(50)
+  y               Float?    @default(50)
+  countdownSize   String?   @default("normal")
+  countdownColor  String?   @default("gold")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([isActive])
+  @@map("banners")
+}
+
+model CommunityMessage {
+  id          String   @id @default(cuid())
+  title       String
+  body        String
+  audience    String   @default("ALL") // ALL, FLOOR_HEADS, ADMINS
+  isPinned    Boolean  @default(false)
+  sentByEmail Boolean  @default(false)
+  sentCount   Int      @default(0)
+  authorName  String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isPinned, createdAt])
+  @@map("community_messages")
+}
+
+model Config {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String
+
+  @@map("config")
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  action    String
+  summary   String
+  userId    String
+  userName  String
+  targetId  String?
+  details   Json?
+  timestamp Float
+  createdAt DateTime @default(now())
+
+  @@index([timestamp])
+  @@index([action])
+  @@map("activity_logs")
+}

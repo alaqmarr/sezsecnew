@@ -1,0 +1,186 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "KanzMarjaan";
+  src: url("/kanz-marjaan.ttf") format("truetype");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --bg-canvas: #faf7f2;
+  --bg-surface: #ffffff;
+  --bg-subtle: #f3efe6;
+  --ink-primary: #231917;
+  --ink-secondary: #5e4f4a;
+  --ink-muted: #8c7b73;
+  --accent-maroon: #6a1b1b;
+  --accent-maroon-dark: #4e1212;
+  --accent-brass: #b8924a;
+  --accent-brass-soft: #fbf6eb;
+  --accent-sage: #2a6041;
+  --border-hairline: #e5ddd0;
+  --border-brass: #d9c398;
+  --sileo-width: min(360px, calc(100vw - 1.5rem));
+}
+
+@theme inline {
+  --color-background: var(--bg-canvas);
+  --color-foreground: var(--ink-primary);
+  --font-sans: var(--font-plus-jakarta), ui-sans-serif, system-ui, sans-serif;
+  --font-serif: var(--font-cormorant), Georgia, Cambria, serif;
+  --font-arabic: "KanzMarjaan", serif;
+}
+
+* {
+  border-color: var(--border-hairline);
+}
+
+html {
+  background-color: var(--bg-canvas);
+  color: var(--ink-primary);
+}
+
+body {
+  background-color: var(--bg-canvas);
+  background-image: url("/fatimid-lattice.svg");
+  background-size: 96px 96px;
+  color: var(--ink-primary);
+  font-family: var(--font-plus-jakarta), ui-sans-serif, system-ui, -apple-system,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Sileo toast viewport above modals & drawers */
+[data-sileo-viewport] {
+  z-index: 200 !important;
+}
+
+.font-arabic {
+  font-family: "KanzMarjaan", serif;
+  line-height: 1.55;
+}
+
+.font-editorial {
+  font-family: var(--font-cormorant), Georgia, serif;
+}
+
+/* Authentic Fatimid Jadwal card & double hairline brass frame */
+.jadwal-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  box-shadow:
+    0 1px 2px rgba(35, 25, 23, 0.03),
+    0 6px 20px -10px rgba(35, 25, 23, 0.06);
+}
+
+.jadwal-double-frame {
+  position: relative;
+  border: 1px solid var(--border-brass);
+}
+
+.jadwal-double-frame::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border: 1px solid rgba(184, 146, 74, 0.28);
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+.fatimid-sheet-pattern {
+  background-image: url("/fatimid-lattice.svg");
+  background-size: 80px 80px;
+}
+
+/* Authentic 12-blade iOS UIActivityIndicatorView radial pulse */
+@keyframes ios-blade-fade {
+  0% {
+    opacity: 0.95;
+  }
+  100% {
+    opacity: 0.16;
+  }
+}
+
+.ios-spinner-blade {
+  transform-origin: 12px 12px;
+  animation: ios-blade-fade 0.96s linear infinite;
+}
+
+/* Chronicle rich content typography */
+.chronicle-prose h1,
+.chronicle-prose h2,
+.chronicle-prose h3 {
+  font-family: var(--font-cormorant), Georgia, serif;
+  font-weight: 700;
+  color: #231917;
+  margin-top: 1.35em;
+  margin-bottom: 0.45em;
+  line-height: 1.25;
+}
+.chronicle-prose h1 {
+  font-size: 1.75rem;
+}
+.chronicle-prose h2 {
+  font-size: 1.45rem;
+}
+.chronicle-prose h3 {
+  font-size: 1.2rem;
+}
+.chronicle-prose p {
+  margin-bottom: 0.95em;
+  line-height: 1.75;
+  color: #3d2e2a;
+}
+.chronicle-prose ul,
+.chronicle-prose ol {
+  margin: 0.75em 0 1em 1.35em;
+  color: #3d2e2a;
+}
+.chronicle-prose ul {
+  list-style-type: disc;
+}
+.chronicle-prose ol {
+  list-style-type: decimal;
+}
+.chronicle-prose a {
+  color: #6a1b1b;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.chronicle-prose blockquote {
+  border-left: 3px solid #b8924a;
+  background: #fbf6eb;
+  padding: 0.75rem 1rem;
+  border-radius: 0 0.75rem 0.75rem 0;
+  font-style: italic;
+  margin: 1rem 0;
+}
+.chronicle-prose img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.75rem;
+  border: 1px solid #e5ddd0;
+  margin: 1rem 0;
+}
+
+/* Custom subtle scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f3efe6;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d1c4b2;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #b5a38c;
+}

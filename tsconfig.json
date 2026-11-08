@@ -1,0 +1,52 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@sezsec/db": ["./src/modules/db/db.module.ts"],
+      "@sezsec/db/*": ["./src/modules/db/*"],
+      "@sezsec/shared": ["./src/modules/shared/shared.module.ts"],
+      "@sezsec/shared/*": ["./src/modules/shared/*"],
+      "@sezsec/ui": ["./src/modules/ui/ui.module.ts"],
+      "@sezsec/ui/*": ["./src/modules/ui/*"],
+      "@sezsec/auth": ["./src/modules/auth/auth.module.ts"],
+      "@sezsec/auth/*": ["./src/modules/auth/*"],
+      "@sezsec/rbac": ["./src/modules/rbac/rbac.module.ts"],
+      "@sezsec/rbac/*": ["./src/modules/rbac/*"],
+      "@sezsec/bridge": ["./src/modules/bridge/bridge.module.ts"],
+      "@sezsec/bridge/*": ["./src/modules/bridge/*"],
+      "@sezsec/notifications": ["./src/modules/notifications/notifications.module.ts"],
+      "@sezsec/notifications/*": ["./src/modules/notifications/*"],
+      "@sezsec/migration": ["./src/modules/migration/migration.module.ts"],
+      "@sezsec/migration/*": ["./src/modules/migration/*"],
+      "@sezsec/logs": ["./src/modules/logs/logs.module.ts"],
+      "@sezsec/logs/*": ["./src/modules/logs/*"]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts",
+    "**/*.mts"
+  ],
+  "exclude": ["node_modules"]
+}
