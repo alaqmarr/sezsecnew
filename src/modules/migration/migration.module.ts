@@ -1,2 +1,2 @@
 export * from "./migration.types";
-export * from "./neon-sync.service";
+export * from "./inventory-sync.service";

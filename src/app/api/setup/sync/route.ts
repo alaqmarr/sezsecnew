@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { getCurrentSessionUser } from "@sezsec/auth";
 import { db } from "@sezsec/db";
 import {
-  runOneClickNeonToSqliteMigration,
   syncInitialPortalDataIfEmpty,
+  syncPortalDataFromInventory,
 } from "@sezsec/migration";
 
 export async function POST() {
@@ -17,12 +17,12 @@ export async function POST() {
     const session = await getCurrentSessionUser();
     if (!session || session.role !== "ADMIN") {
       return NextResponse.json(
-        { error: "Only Administrators can trigger a database sync." },
+        { error: "Only Administrators can trigger an Inventory App sync." },
         { status: 403 }
       );
     }
 
-    const res = await runOneClickNeonToSqliteMigration({
+    const res = await syncPortalDataFromInventory({
       actor: { id: session.id, name: session.name || session.username },
     });
     return NextResponse.json(res);
@@ -32,7 +32,7 @@ export async function POST() {
         error:
           err instanceof Error
             ? err.message
-            : "Failed to sync from Neon PostgreSQL.",
+            : "Failed to sync from Inventory App (sezinv).",
       },
       { status: 500 }
     );

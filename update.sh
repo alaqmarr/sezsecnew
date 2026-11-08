@@ -9,7 +9,7 @@
 #
 # Usage:
 #   ./update.sh
-#   bash update.sh
+#   ./update.sh --sync-inventory
 # ==============================================================================
 
 set -euo pipefail
@@ -23,6 +23,13 @@ main() {
   local APP_PORT="${APP_PORT:-3334}"
   local GIT_REMOTE="${GIT_REMOTE:-origin}"
   local GIT_BRANCH="${GIT_BRANCH:-}"
+  local FORCE_INV_SYNC=0
+
+  for arg in "$@"; do
+    if [ "$arg" = "--sync-inventory" ] || [ "$arg" = "--force-sync" ]; then
+      FORCE_INV_SYNC=1
+    fi
+  done
 
   echo "======================================================================"
   echo "  SEZSEC Members Portal ($PM2_APP_NAME) — Production Update & Deploy"
@@ -60,6 +67,71 @@ main() {
     if [ -f ".env.example" ]; then
       cp ".env.example" ".env"
     fi
+  fi
+
+  # Align SEZSEC_BRIDGE_KEY with sibling ../sezinv/.env and retire any legacy NEON_DATABASE_URL
+  local HAD_LEGACY_NEON
+  HAD_LEGACY_NEON="$(node <<'NODE_EOF'
+const fs = require("node:fs");
+const path = require("node:path");
+
+let hadNeon = "0";
+if (fs.existsSync(".env")) {
+  let envText = fs.readFileSync(".env", "utf8");
+  let changed = false;
+
+  if (/^\s*NEON_DATABASE_URL\s*=.*$/m.test(envText)) {
+    envText = envText.replace(/^\s*NEON_DATABASE_URL\s*=.*(?:\r?\n)?/gm, "");
+    hadNeon = "1";
+    changed = true;
+  }
+
+  let sharedBridgeKey = "";
+  let siblingEnvFound = false;
+  for (const rel of ["../sezinv/.env", "../jamatevents/.env"]) {
+    const candidate = path.resolve(process.cwd(), rel);
+    if (fs.existsSync(candidate)) {
+      siblingEnvFound = true;
+      const raw = fs.readFileSync(candidate, "utf8");
+      const m = raw.match(/^\s*SEZSEC_BRIDGE_KEY\s*=\s*"?([^"#\r\n]+)"?/m);
+      if (m && m[1].trim() && !m[1].includes("replace-with")) {
+        sharedBridgeKey = m[1].trim();
+        break;
+      }
+    }
+  }
+
+  if (!sharedBridgeKey && siblingEnvFound) {
+    sharedBridgeKey = "sezsec-internal-bridge-key-2026";
+  }
+
+  if (sharedBridgeKey) {
+    if (/^\s*SEZSEC_BRIDGE_KEY\s*=/m.test(envText)) {
+      const nextText = envText.replace(
+        /^(\s*SEZSEC_BRIDGE_KEY\s*=\s*).*/m,
+        `$1"${sharedBridgeKey}"`
+      );
+      if (nextText !== envText) {
+        envText = nextText;
+        changed = true;
+      }
+    } else {
+      envText = envText.replace(/\s*$/, `\nSEZSEC_BRIDGE_KEY="${sharedBridgeKey}"\n`);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    fs.writeFileSync(".env", envText, { mode: 0o600 });
+  }
+}
+process.stdout.write(hadNeon);
+NODE_EOF
+)"
+
+  if [ "$HAD_LEGACY_NEON" = "1" ]; then
+    echo "      Retired legacy NEON_DATABASE_URL from .env — scheduling Inventory App reconciliation."
+    FORCE_INV_SYNC=1
   fi
   chmod 600 ".env" 2>/dev/null || true
 
@@ -163,7 +235,11 @@ NODE_EOF
 
     if [ "${SEZSEC_UPDATE_REEXEC:-0}" != "1" ] && git diff --name-only "$PRE_HEAD" "$POST_HEAD" -- update.sh | grep -q '^update\.sh$'; then
       echo "      update.sh was updated from GitHub — reloading updated script..."
-      SEZSEC_UPDATE_REEXEC=1 SEZSEC_BACKUP_DONE=1 exec bash "$SCRIPT_DIR/update.sh" "$@"
+      if [ "$FORCE_INV_SYNC" -eq 1 ]; then
+        SEZSEC_UPDATE_REEXEC=1 SEZSEC_BACKUP_DONE=1 exec bash "$SCRIPT_DIR/update.sh" "$@" --sync-inventory
+      else
+        SEZSEC_UPDATE_REEXEC=1 SEZSEC_BACKUP_DONE=1 exec bash "$SCRIPT_DIR/update.sh" "$@"
+      fi
     fi
   fi
 
@@ -171,7 +247,7 @@ NODE_EOF
   echo "[4/8] Installing npm dependencies..."
   npm install --no-audit --no-fund
 
-  # 5. Prisma Client, Schema Sync & Database Sanctioning
+  # 5. Prisma Client, Schema Sync & Database Sanctioning (from Inventory App)
   echo "[5/8] Generating Prisma client, syncing schema & sanctioning SQLite DB..."
   if [ "$DB_FILE_PATH" != ":memory:" ]; then
     local DB_DIR_ENSURE
@@ -182,7 +258,11 @@ NODE_EOF
 
   npx prisma generate
   npx prisma db push
-  npx tsx prisma/sanction-db.ts
+  if [ "$FORCE_INV_SYNC" -eq 1 ]; then
+    npx tsx prisma/sanction-db.ts --sync-inventory
+  else
+    npx tsx prisma/sanction-db.ts
+  fi
 
   if [ "$DB_FILE_PATH" != ":memory:" ]; then
     for f in "$DB_FILE_PATH" "${DB_FILE_PATH}-wal" "${DB_FILE_PATH}-shm"; do

@@ -15,7 +15,7 @@ export async function POST(request: Request) {
     const password = String(body.password || "");
 
     const userCount = await db.user.count();
-    if (userCount === 0 && process.env.NEON_DATABASE_URL) {
+    if (userCount === 0) {
       await syncInitialPortalDataIfEmpty().catch(() => null);
     }
 

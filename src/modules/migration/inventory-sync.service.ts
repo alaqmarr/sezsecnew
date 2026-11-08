@@ -1,4 +1,6 @@
-import { Pool, types as pgTypes, type PoolClient } from "pg";
+import fs from "node:fs";
+import path from "node:path";
+import type Database from "better-sqlite3";
 import type {
   ApprovalStatus,
   AttendanceStatus,
@@ -6,32 +8,28 @@ import type {
   ProfileStatus,
   Role,
 } from "@/generated/prisma/client";
-import { db, sqliteAdapterFactory, withWriteLock } from "@sezsec/db";
+import {
+  getBridgeSecretKey,
+  getInternalJamateventsUrl,
+} from "@sezsec/bridge/bridge.service";
+import {
+  db,
+  getDatabaseHealth,
+  sqliteAdapterFactory,
+  withWriteLock,
+} from "@sezsec/db";
 import { recordActivity } from "@sezsec/logs";
 import {
   DEFAULT_SEZSEC_MODULES,
   EVENT_CHARGES_MODULE_ID,
 } from "@sezsec/rbac/rbac.constants";
+import { formatTimeDisplay, getHallModuleId } from "@sezsec/shared";
 import type {
+  InventorySyncSourceMode,
   MigrationPreviewReport,
   MigrationRunResult,
   MigrationTableCount,
 } from "./migration.types";
-
-function parsePgTimestampWithoutTzAsUtc(raw: string): Date {
-  const trimmed = String(raw || "").trim();
-  if (!trimmed) return new Date(NaN);
-  if (/[zZ]|[+-]\d{2}(:?\d{2})?$/.test(trimmed)) {
-    return new Date(trimmed.replace(" ", "T"));
-  }
-  return new Date(`${trimmed.replace(" ", "T")}Z`);
-}
-
-pgTypes.setTypeParser(1114, parsePgTimestampWithoutTzAsUtc);
-pgTypes.setTypeParser(
-  1082,
-  (raw: string) => new Date(`${String(raw).trim()}T00:00:00.000Z`)
-);
 
 const VALID_ROLES = new Set<Role>([
   "ADMIN",
@@ -125,21 +123,104 @@ function coerceAttendanceStatus(val: unknown): AttendanceStatus {
   return VALID_ATTENDANCE_STATUS.has(s) ? s : "PRESENT";
 }
 
+function coerceBoolean(val: unknown): boolean {
+  if (typeof val === "boolean") return val;
+  if (typeof val === "number") return val !== 0;
+  if (typeof val === "string") {
+    const lower = val.trim().toLowerCase();
+    return lower === "true" || lower === "1";
+  }
+  return Boolean(val);
+}
+
 function cleanNullableUnique(val: unknown): string | null {
   if (val === null || val === undefined) return null;
   const trimmed = String(val).trim();
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function normalizeNeonConnectionUrl(rawUrl: string): string {
-  try {
-    const parsed = new URL(rawUrl);
-    parsed.searchParams.delete("sslmode");
-    parsed.searchParams.delete("channel_binding");
-    return parsed.toString();
-  } catch {
-    return rawUrl;
+function toDate(val: unknown, fallback: Date = new Date()): Date {
+  if (val === null || val === undefined || val === "") return fallback;
+  if (val instanceof Date) {
+    return Number.isNaN(val.getTime()) ? fallback : val;
   }
+  if (typeof val === "number") {
+    const d = new Date(val);
+    return Number.isNaN(d.getTime()) ? fallback : d;
+  }
+  const str = String(val).trim();
+  if (!str) return fallback;
+  if (/^\d{10,15}$/.test(str)) {
+    const d = new Date(Number(str));
+    return Number.isNaN(d.getTime()) ? fallback : d;
+  }
+  const d = new Date(str);
+  return Number.isNaN(d.getTime()) ? fallback : d;
+}
+
+function toNullableDate(val: unknown): Date | null {
+  if (val === null || val === undefined || val === "") return null;
+  if (val instanceof Date) {
+    return Number.isNaN(val.getTime()) ? null : val;
+  }
+  if (typeof val === "number") {
+    const d = new Date(val);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const str = String(val).trim();
+  if (!str) return null;
+  if (/^\d{10,15}$/.test(str)) {
+    const d = new Date(Number(str));
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(str);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+interface UnifiedFloorSnapshot {
+  id: string;
+  name: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  headIds: string[];
+  subHeadIds: string[];
+  memberIds: string[];
+}
+
+interface UnifiedAttendanceCloneSnapshot {
+  id: string;
+  eventId: string;
+  isActive: unknown;
+  startTime: unknown;
+  endTime: unknown;
+  createdAt?: unknown;
+  eventTitle?: string | null;
+  eventDate?: unknown;
+  eventTime?: string | null;
+  eventType?: string | null;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type RawRow = Record<string, any>;
+
+interface InventoryBootstrapSnapshot {
+  modules: RawRow[];
+  moduleLinks: RawRow[];
+  users: RawRow[];
+  userModuleAccess: RawRow[];
+  halls: Array<{ id?: string; name: string }>;
+  khidmatRequests: RawRow[];
+  memberRegistrations: RawRow[];
+  blogs: RawRow[];
+  banners: RawRow[];
+  userFeeConfigs: RawRow[];
+  feeRecords: RawRow[];
+  feeTransactions: RawRow[];
+  eventContributions: RawRow[];
+  feeTransactionAllocations: RawRow[];
+  floorConfigs: UnifiedFloorSnapshot[];
+  attendanceRecords: RawRow[];
+  attendanceEventClones: UnifiedAttendanceCloneSnapshot[];
 }
 
 const TABLE_DEFINITIONS: Array<{
@@ -246,213 +327,416 @@ const TABLE_DEFINITIONS: Array<{
   },
 ];
 
-async function withReadOnlyNeonClient<T>(
-  connectionUrl: string,
-  fn: (client: PoolClient, existingTables: Set<string>) => Promise<T>
-): Promise<T> {
-  const pool = new Pool({
-    connectionString: normalizeNeonConnectionUrl(connectionUrl),
-    max: 1,
-    connectionTimeoutMillis: 15000,
-    ssl: { rejectUnauthorized: false },
-  });
-
-  const client = await pool.connect();
-  try {
-    await client.query("SET TIME ZONE 'UTC';");
-    await client.query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;");
-    await client.query("BEGIN READ ONLY;");
-
-    const tablesRes = await client.query<{ table_name: string }>(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`
+function resolveSiblingInventorySqlitePath(): string | null {
+  const candidates: string[] = [];
+  if (process.env.INVENTORY_DB_PATH?.trim()) {
+    const custom = process.env.INVENTORY_DB_PATH.trim().replace(/^file:/, "");
+    candidates.push(
+      path.isAbsolute(custom)
+        ? custom
+        : path.resolve(/*turbopackIgnore: true*/ process.cwd(), custom)
     );
-    const existingTables = new Set(tablesRes.rows.map((r) => r.table_name));
+  }
 
-    const result = await fn(client, existingTables);
-    await client.query("ROLLBACK;");
-    return result;
+  candidates.push(
+    path.resolve(
+      /*turbopackIgnore: true*/ process.cwd(),
+      "../sezinv/data/jamatevents.db"
+    ),
+    path.resolve(
+      /*turbopackIgnore: true*/ process.cwd(),
+      "../jamatevents/data/jamatevents.db"
+    ),
+    "/home/ubuntu/sezinv/data/jamatevents.db"
+  );
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(/*turbopackIgnore: true*/ candidate)) {
+        return candidate;
+      }
+    } catch {
+      // Ignore inaccessible candidate path
+    }
+  }
+
+  return null;
+}
+
+async function withReadOnlyInventorySqlite<T>(
+  sqliteFilePath: string,
+  fn: (sqlite: Database.Database, existingTables: Set<string>) => T
+): Promise<T> {
+  if (!sqliteAdapterFactory.getRawClient()) {
+    await getDatabaseHealth();
+  }
+  const primaryClient = sqliteAdapterFactory.getRawClient();
+  if (!primaryClient) {
+    throw new Error("Primary SQLite adapter client is not initialized.");
+  }
+
+  const DatabaseCtor = primaryClient.constructor as unknown as new (
+    filename: string,
+    options?: Database.Options
+  ) => Database.Database;
+
+  let sqlite: Database.Database;
+  try {
+    sqlite = new DatabaseCtor(sqliteFilePath, {
+      readonly: true,
+      fileMustExist: true,
+      timeout: 8000,
+    });
+  } catch {
+    // If WAL -shm has not been initialized yet by a writer, open with query_only=ON so zero writes can occur
+    sqlite = new DatabaseCtor(sqliteFilePath, {
+      fileMustExist: true,
+      timeout: 8000,
+    });
+    sqlite.pragma("query_only = ON");
+  }
+
+  try {
+    const rows = sqlite
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all() as Array<{ name: string }>;
+    const existingTables = new Set(rows.map((r) => r.name));
+    return fn(sqlite, existingTables);
   } finally {
-    client.release();
-    await pool.end().catch(() => null);
+    sqlite.close();
   }
 }
 
-function toDate(val: unknown, fallback: Date = new Date()): Date {
-  if (!val) return fallback;
-  if (val instanceof Date) return val;
-  const d = new Date(String(val));
-  return Number.isNaN(d.getTime()) ? fallback : d;
+async function fetchInventoryBridgeJson<T>(
+  pathAndQuery: string
+): Promise<{ data: T; baseUrl: string }> {
+  const primaryBase = await getInternalJamateventsUrl();
+  const candidateBases = [primaryBase];
+  if (primaryBase.includes("127.0.0.1")) {
+    candidateBases.push(primaryBase.replace("127.0.0.1", "localhost"));
+  } else if (primaryBase.includes("localhost")) {
+    candidateBases.push(primaryBase.replace("localhost", "127.0.0.1"));
+  }
+
+  let lastErr: Error | null = null;
+  for (const base of candidateBases) {
+    try {
+      const res = await fetch(`${base}${pathAndQuery}`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          "x-sezsec-bridge-key": getBridgeSecretKey(),
+          "x-sezsec-source": "sezsecnew-3334",
+        },
+        cache: "no-store",
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!res.ok) {
+        lastErr = new Error(
+          `Inventory bridge ${base}${pathAndQuery} returned HTTP ${res.status}`
+        );
+        continue;
+      }
+      const json = (await res.json()) as T;
+      return { data: json, baseUrl: base };
+    } catch (err) {
+      lastErr =
+        err instanceof Error
+          ? err
+          : new Error(`Unreachable loopback at ${base}`);
+    }
+  }
+
+  throw (
+    lastErr ||
+    new Error(`Inventory App loopback unreachable at ${primaryBase}`)
+  );
 }
 
-function toNullableDate(val: unknown): Date | null {
-  if (!val) return null;
-  if (val instanceof Date) return val;
-  const d = new Date(String(val));
-  return Number.isNaN(d.getTime()) ? null : d;
+async function readSnapshotFromSiblingSqlite(
+  sqlitePath: string
+): Promise<InventoryBootstrapSnapshot> {
+  return withReadOnlyInventorySqlite(sqlitePath, (sqlite, existingTables) => {
+    const selectAll = (table: string): RawRow[] => {
+      if (!existingTables.has(table)) return [];
+      return sqlite.prepare(`SELECT * FROM "${table}"`).all() as RawRow[];
+    };
+
+    const rawFloors = selectAll("floor_configs");
+    const floorIdSet = new Set(rawFloors.map((f) => String(f.id)));
+    const headsJoin = selectAll("_FloorHeads");
+    const subHeadsJoin = selectAll("_FloorSubHeads");
+    const membersJoin = selectAll("_FloorMembers");
+
+    const extractJoinUsers = (floorId: string, joinRows: RawRow[]): string[] => {
+      const out = new Set<string>();
+      for (const j of joinRows) {
+        const a = String(j.A ?? "");
+        const b = String(j.B ?? "");
+        if (a === floorId && b) {
+          out.add(b);
+        } else if (b === floorId && a && !floorIdSet.has(a)) {
+          out.add(a);
+        }
+      }
+      return [...out];
+    };
+
+    const floorConfigs: UnifiedFloorSnapshot[] = rawFloors.map((fc) => ({
+      id: String(fc.id),
+      name: String(fc.name),
+      createdAt: fc.createdAt,
+      updatedAt: fc.updatedAt,
+      headIds: extractJoinUsers(String(fc.id), headsJoin),
+      subHeadIds: extractJoinUsers(String(fc.id), subHeadsJoin),
+      memberIds: extractJoinUsers(String(fc.id), membersJoin),
+    }));
+
+    const eventsMap = new Map<
+      string,
+      {
+        title: string;
+        occasionDate: unknown;
+        occasionTime: string | null;
+        eventType: string | null;
+      }
+    >();
+    if (existingTables.has("events")) {
+      const evRows = sqlite
+        .prepare(
+          `SELECT id, name, description, occasionDate, occasionTime, eventType FROM "events"`
+        )
+        .all() as RawRow[];
+      for (const ev of evRows) {
+        eventsMap.set(String(ev.id), {
+          title: String(ev.description || ev.name || "Jamaat Miqaat"),
+          occasionDate: ev.occasionDate,
+          occasionTime: ev.occasionTime
+            ? formatTimeDisplay(String(ev.occasionTime))
+            : null,
+          eventType: ev.eventType ? String(ev.eventType) : null,
+        });
+      }
+    }
+
+    const rawClones = selectAll("attendance_event_clones");
+    const attendanceEventClones: UnifiedAttendanceCloneSnapshot[] =
+      rawClones.map((aec) => {
+        const meta = eventsMap.get(String(aec.eventId));
+        return {
+          id: String(aec.id),
+          eventId: String(aec.eventId),
+          isActive: aec.isActive,
+          startTime: aec.startTime,
+          endTime: aec.endTime,
+          createdAt: aec.createdAt,
+          eventTitle: meta?.title ?? null,
+          eventDate: meta?.occasionDate ?? null,
+          eventTime: meta?.occasionTime ?? null,
+          eventType: meta?.eventType ?? null,
+        };
+      });
+
+    const rawHalls = selectAll("halls");
+
+    return {
+      modules: selectAll("modules"),
+      moduleLinks: selectAll("module_links"),
+      users: selectAll("users"),
+      userModuleAccess: selectAll("user_module_access"),
+      halls: rawHalls.map((h) => ({
+        id: String(h.id),
+        name: String(h.name || ""),
+      })),
+      khidmatRequests: selectAll("khidmat_requests"),
+      memberRegistrations: selectAll("member_registrations"),
+      blogs: selectAll("blogs"),
+      banners: selectAll("banners"),
+      userFeeConfigs: selectAll("user_fee_configs"),
+      feeRecords: selectAll("fee_records"),
+      feeTransactions: selectAll("fee_transactions"),
+      eventContributions: selectAll("event_contributions"),
+      feeTransactionAllocations: selectAll("fee_transaction_allocations"),
+      floorConfigs,
+      attendanceRecords: selectAll("attendance_records"),
+      attendanceEventClones,
+    };
+  });
 }
 
-export async function inspectNeonVsSqliteCounts(
-  customNeonUrl?: string
-): Promise<MigrationPreviewReport> {
-  const neonUrl = (customNeonUrl || process.env.NEON_DATABASE_URL || "").trim();
+async function loadInventoryBootstrapSnapshot(): Promise<{
+  sourceMode: Exclude<InventorySyncSourceMode, "unavailable">;
+  sourceLabel: string;
+  snapshot: InventoryBootstrapSnapshot;
+}> {
+  // Primary Path: Internal Loopback HTTP Bridge to sezinv (127.0.0.1:3333)
+  let bridgeError: string | null = null;
+  try {
+    const { data, baseUrl } = await fetchInventoryBridgeJson<{
+      ok?: boolean;
+      snapshot?: InventoryBootstrapSnapshot;
+    }>("/api/bridge/bootstrap");
+    if (data?.snapshot) {
+      return {
+        sourceMode: "loopback-bridge",
+        sourceLabel: `${baseUrl}/api/bridge/bootstrap`,
+        snapshot: data.snapshot,
+      };
+    }
+  } catch (err) {
+    bridgeError = err instanceof Error ? err.message : String(err);
+  }
+
+  // Automatic Offline / Pre-Start Fallback: Direct read-only sibling Inventory SQLite DB (../sezinv/data/jamatevents.db)
+  const siblingDbPath = resolveSiblingInventorySqlitePath();
+  if (siblingDbPath) {
+    const snapshot = await readSnapshotFromSiblingSqlite(siblingDbPath);
+    return {
+      sourceMode: "sibling-sqlite",
+      sourceLabel: siblingDbPath,
+      snapshot,
+    };
+  }
+
+  throw new Error(
+    `Could not reach Inventory App (sezinv) over loopback (${bridgeError || "offline"}) and no sibling jamatevents.db found.`
+  );
+}
+
+export async function inspectInventoryVsPortalCounts(): Promise<MigrationPreviewReport> {
   const sqliteCounts = await Promise.all(
     TABLE_DEFINITIONS.map((t) => t.countSqlite())
   );
 
-  if (!neonUrl) {
-    const tables: MigrationTableCount[] = TABLE_DEFINITIONS.map((def, idx) => ({
-      table: def.table,
-      label: def.label,
-      group: def.group,
-      neonCount: 0,
-      sqliteCount: sqliteCounts[idx],
-    }));
-    return {
-      neonConfigured: false,
-      neonReachable: false,
-      error: "NEON_DATABASE_URL is not configured in .env.",
-      tables,
-      totalNeonRows: 0,
-      totalSqliteRows: sqliteCounts.reduce((a, b) => a + b, 0),
-    };
-  }
-
+  // Try fast ?mode=counts over loopback bridge first
   try {
-    const neonCountMap = await withReadOnlyNeonClient(
-      neonUrl,
-      async (client, existingTables) => {
-        const counts: Record<string, number> = {};
-        for (const def of TABLE_DEFINITIONS) {
-          if (!existingTables.has(def.table)) {
-            counts[def.table] = 0;
-            continue;
-          }
-          const res = await client.query<{ cnt: string }>(
-            `SELECT COUNT(*)::text AS cnt FROM "${def.table}"`
-          );
-          counts[def.table] = parseInt(res.rows[0]?.cnt || "0", 10);
-        }
-        return counts;
-      }
-    );
-
-    const tables: MigrationTableCount[] = TABLE_DEFINITIONS.map((def, idx) => ({
-      table: def.table,
-      label: def.label,
-      group: def.group,
-      neonCount: neonCountMap[def.table] ?? 0,
-      sqliteCount: sqliteCounts[idx],
-    }));
-
-    return {
-      neonConfigured: true,
-      neonReachable: true,
-      tables,
-      totalNeonRows: Object.values(neonCountMap).reduce((a, b) => a + b, 0),
-      totalSqliteRows: sqliteCounts.reduce((a, b) => a + b, 0),
-    };
-  } catch (err) {
-    const msg =
-      err instanceof Error
-        ? err.message
-        : "Could not connect to Neon PostgreSQL.";
-    const tables: MigrationTableCount[] = TABLE_DEFINITIONS.map((def, idx) => ({
-      table: def.table,
-      label: def.label,
-      group: def.group,
-      neonCount: 0,
-      sqliteCount: sqliteCounts[idx],
-    }));
-    return {
-      neonConfigured: true,
-      neonReachable: false,
-      error: msg,
-      tables,
-      totalNeonRows: 0,
-      totalSqliteRows: sqliteCounts.reduce((a, b) => a + b, 0),
-    };
-  }
-}
-
-export async function runOneClickNeonToSqliteMigration(params: {
-  actor: { id: string; name: string };
-  customNeonUrl?: string;
-}): Promise<MigrationRunResult> {
-  const startedAt = performance.now();
-  const neonUrl = (
-    params.customNeonUrl ||
-    process.env.NEON_DATABASE_URL ||
-    ""
-  ).trim();
-
-  if (!neonUrl) {
-    throw new Error("NEON_DATABASE_URL is missing.");
-  }
-
-  const importedByTable: Record<string, number> = {};
-  const warnings: string[] = [];
-
-  const snapshot = await withReadOnlyNeonClient(
-    neonUrl,
-    async (client, existingTables) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const selectAll = async (tableName: string): Promise<any[]> => {
-        if (!existingTables.has(tableName)) return [];
-        const res = await client.query(`SELECT * FROM "${tableName}"`);
-        return res.rows;
+    const { data, baseUrl } = await fetchInventoryBridgeJson<{
+      ok?: boolean;
+      counts?: Record<string, number>;
+    }>("/api/bridge/bootstrap?mode=counts");
+    if (data?.counts) {
+      const counts = data.counts;
+      const tables: MigrationTableCount[] = TABLE_DEFINITIONS.map(
+        (def, idx) => ({
+          table: def.table,
+          label: def.label,
+          group: def.group,
+          inventoryCount: counts[def.table] ?? 0,
+          sqliteCount: sqliteCounts[idx],
+        })
+      );
+      return {
+        inventoryReachable: true,
+        sourceMode: "loopback-bridge",
+        sourceLabel: `${baseUrl}/api/bridge/bootstrap`,
+        tables,
+        totalInventoryRows: tables.reduce((a, b) => a + b.inventoryCount, 0),
+        totalSqliteRows: sqliteCounts.reduce((a, b) => a + b, 0),
       };
+    }
+  } catch {
+    // Fallback to sibling SQLite check below
+  }
+
+  const siblingDbPath = resolveSiblingInventorySqlitePath();
+  if (siblingDbPath) {
+    try {
+      const counts = await withReadOnlyInventorySqlite(
+        siblingDbPath,
+        (sqlite, existingTables) => {
+          const out: Record<string, number> = {};
+          for (const def of TABLE_DEFINITIONS) {
+            if (!existingTables.has(def.table)) {
+              out[def.table] = 0;
+              continue;
+            }
+            const row = sqlite
+              .prepare(`SELECT COUNT(*) AS cnt FROM "${def.table}"`)
+              .get() as { cnt?: number } | undefined;
+            out[def.table] = Number(row?.cnt ?? 0);
+          }
+          return out;
+        }
+      );
+
+      const tables: MigrationTableCount[] = TABLE_DEFINITIONS.map(
+        (def, idx) => ({
+          table: def.table,
+          label: def.label,
+          group: def.group,
+          inventoryCount: counts[def.table] ?? 0,
+          sqliteCount: sqliteCounts[idx],
+        })
+      );
 
       return {
-        modules: await selectAll("modules"),
-        moduleLinks: await selectAll("module_links"),
-        users: await selectAll("users"),
-        userModuleAccess: await selectAll("user_module_access"),
-        events: await selectAll("events"),
-        config: await selectAll("config"),
-        khidmatRequests: await selectAll("khidmat_requests"),
-        memberRegistrations: await selectAll("member_registrations"),
-        blogs: await selectAll("blogs"),
-        banners: await selectAll("banners"),
-        userFeeConfigs: await selectAll("user_fee_configs"),
-        feeRecords: await selectAll("fee_records"),
-        feeTransactions: await selectAll("fee_transactions"),
-        eventContributions: await selectAll("event_contributions"),
-        feeTransactionAllocations: await selectAll(
-          "fee_transaction_allocations"
-        ),
-        floorConfigs: await selectAll("floor_configs"),
-        floorHeadsJoin: await selectAll("_FloorHeads"),
-        floorSubHeadsJoin: await selectAll("_FloorSubHeads"),
-        floorMembersJoin: await selectAll("_FloorMembers"),
-        attendanceRecords: await selectAll("attendance_records"),
-        attendanceEventClones: await selectAll("attendance_event_clones"),
+        inventoryReachable: true,
+        sourceMode: "sibling-sqlite",
+        sourceLabel: siblingDbPath,
+        tables,
+        totalInventoryRows: tables.reduce((a, b) => a + b.inventoryCount, 0),
+        totalSqliteRows: sqliteCounts.reduce((a, b) => a + b, 0),
+      };
+    } catch (err) {
+      const tables: MigrationTableCount[] = TABLE_DEFINITIONS.map(
+        (def, idx) => ({
+          table: def.table,
+          label: def.label,
+          group: def.group,
+          inventoryCount: 0,
+          sqliteCount: sqliteCounts[idx],
+        })
+      );
+      return {
+        inventoryReachable: false,
+        sourceMode: "unavailable",
+        sourceLabel: siblingDbPath,
+        error:
+          err instanceof Error
+            ? err.message
+            : "Could not inspect sibling Inventory SQLite database.",
+        tables,
+        totalInventoryRows: 0,
+        totalSqliteRows: sqliteCounts.reduce((a, b) => a + b, 0),
       };
     }
-  );
-
-  // Build quick lookup map for Neon events so AttendanceEventClone gets snapshot metadata
-  const neonEventsById = new Map<
-    string,
-    {
-      title: string;
-      occasionDate: Date;
-      occasionTime: string;
-      eventType: string;
-    }
-  >();
-  for (const ev of snapshot.events) {
-    neonEventsById.set(String(ev.id), {
-      title: String(ev.description || ev.name || "Jamaat Miqaat"),
-      occasionDate: toDate(ev.occasionDate),
-      occasionTime: String(ev.occasionTime || "07:30 PM"),
-      eventType: String(ev.eventType || "PUBLIC"),
-    });
   }
+
+  const targetUrl = await getInternalJamateventsUrl();
+  const tables: MigrationTableCount[] = TABLE_DEFINITIONS.map((def, idx) => ({
+    table: def.table,
+    label: def.label,
+    group: def.group,
+    inventoryCount: 0,
+    sqliteCount: sqliteCounts[idx],
+  }));
+
+  return {
+    inventoryReachable: false,
+    sourceMode: "unavailable",
+    sourceLabel: targetUrl,
+    error: `Inventory App (sezinv) is not reachable at ${targetUrl} and no sibling jamatevents.db was found.`,
+    tables,
+    totalInventoryRows: 0,
+    totalSqliteRows: sqliteCounts.reduce((a, b) => a + b, 0),
+  };
+}
+
+export async function syncPortalDataFromInventory(params: {
+  actor: { id: string; name: string };
+}): Promise<MigrationRunResult> {
+  const startedAt = performance.now();
+  const importedByTable: Record<string, number> = {};
+  const warnings: string[] = [];
+  let hallsProvisioned = 0;
+
+  const { sourceMode, sourceLabel, snapshot } =
+    await loadInventoryBootstrapSnapshot();
 
   await withWriteLock(() =>
     db.$transaction(
       async (tx) => {
-        // 1. Modules & Module Links
+        // 1. Modules, Hall Modules & Module Links
         const moduleIdMap = new Map<string, string>();
         for (const m of snapshot.modules) {
           const byId = await tx.module.findUnique({ where: { id: m.id } });
@@ -493,9 +777,11 @@ export async function runOneClickNeonToSqliteMigration(params: {
           }
         }
 
+        // Ensure canonical SEZSEC modules exist
         for (const defMod of DEFAULT_SEZSEC_MODULES) {
           const existingById = await tx.module.findUnique({
             where: { id: defMod.id },
+            include: { links: true },
           });
           const existingByName = await tx.module.findUnique({
             where: { name: defMod.name },
@@ -516,9 +802,51 @@ export async function runOneClickNeonToSqliteMigration(params: {
                 },
               },
             });
+          } else if (
+            existingById &&
+            existingById.links.length === 0 &&
+            defMod.links.length > 0
+          ) {
+            await tx.moduleLink.createMany({
+              data: defMod.links.map((l) => ({
+                moduleId: existingById.id,
+                path: l.path,
+                label: l.label,
+                order: l.order,
+              })),
+            });
           }
         }
-        importedByTable.modules = snapshot.modules.length;
+
+        // Provision hall-<slug> modules for every Hall in the Inventory App
+        for (const h of snapshot.halls || []) {
+          const cleanName = String(h.name || "").trim();
+          if (!cleanName) continue;
+          const hallModId = getHallModuleId(cleanName);
+          const hallModName = `Hall Thaal Entry: ${cleanName}`;
+          const byId = await tx.module.findUnique({ where: { id: hallModId } });
+          const byName = await tx.module.findUnique({
+            where: { name: hallModName },
+          });
+          if (!byId && !byName) {
+            await tx.module.create({
+              data: {
+                id: hallModId,
+                name: hallModName,
+                description: `Allows entering actual thaals served for ${cleanName} on /menu`,
+                icon: "Utensils",
+              },
+            });
+            moduleIdMap.set(hallModId, hallModId);
+            hallsProvisioned += 1;
+          } else if (byId) {
+            moduleIdMap.set(hallModId, byId.id);
+          } else if (byName) {
+            moduleIdMap.set(hallModId, byName.id);
+          }
+        }
+
+        importedByTable.modules = snapshot.modules.length + hallsProvisioned;
 
         let mlCount = 0;
         for (const ml of snapshot.moduleLinks) {
@@ -658,7 +986,14 @@ export async function runOneClickNeonToSqliteMigration(params: {
         let umaCount = 0;
         for (const uma of snapshot.userModuleAccess) {
           const uid = userIdMap.get(uma.userId);
-          const mid = moduleIdMap.get(uma.moduleId);
+          const mid =
+            moduleIdMap.get(uma.moduleId) ||
+            (await tx.module
+              .findUnique({
+                where: { id: String(uma.moduleId) },
+                select: { id: true },
+              })
+              .then((r) => r?.id));
           if (!uid || !mid) continue;
 
           const existingAccess = await tx.userModuleAccess.findUnique({
@@ -680,7 +1015,7 @@ export async function runOneClickNeonToSqliteMigration(params: {
           umaCount += 1;
         }
 
-        // Grant event_charges to ADMIN users automatically so OTP works smoothly
+        // Ensure ADMIN users always hold event_charges permission
         const adminUsers = await tx.user.findMany({
           where: { role: "ADMIN" },
           select: { id: true },
@@ -800,7 +1135,7 @@ export async function runOneClickNeonToSqliteMigration(params: {
             update: {
               imageUrl: bn.imageUrl,
               href: bn.href ?? null,
-              isActive: Boolean(bn.isActive),
+              isActive: coerceBoolean(bn.isActive),
               countdownTarget: toNullableDate(bn.countdownTarget),
               countdownLabel: bn.countdownLabel ?? null,
               x: bn.x !== null && bn.x !== undefined ? Number(bn.x) : 50,
@@ -812,7 +1147,7 @@ export async function runOneClickNeonToSqliteMigration(params: {
               id: bn.id,
               imageUrl: bn.imageUrl,
               href: bn.href ?? null,
-              isActive: Boolean(bn.isActive),
+              isActive: coerceBoolean(bn.isActive),
               countdownTarget: toNullableDate(bn.countdownTarget),
               countdownLabel: bn.countdownLabel ?? null,
               x: bn.x !== null && bn.x !== undefined ? Number(bn.x) : 50,
@@ -987,20 +1322,18 @@ export async function runOneClickNeonToSqliteMigration(params: {
 
         // 6. Floor Hierarchy & Attendance
         for (const fc of snapshot.floorConfigs) {
-          const mapJoinUsers = (rows: Array<{ A: string; B: string }>) => {
-            const uniqueIds = new Set<string>();
-            for (const j of rows) {
-              if (j.A === fc.id) {
-                const mapped = userIdMap.get(String(j.B));
-                if (mapped) uniqueIds.add(mapped);
-              }
+          const mapUserIdList = (ids?: string[]) => {
+            const unique = new Set<string>();
+            for (const rawId of ids || []) {
+              const mapped = userIdMap.get(String(rawId));
+              if (mapped) unique.add(mapped);
             }
-            return [...uniqueIds].map((id) => ({ id }));
+            return [...unique].map((id) => ({ id }));
           };
 
-          const headIds = mapJoinUsers(snapshot.floorHeadsJoin);
-          const subHeadIds = mapJoinUsers(snapshot.floorSubHeadsJoin);
-          const memberIds = mapJoinUsers(snapshot.floorMembersJoin);
+          const headIds = mapUserIdList(fc.headIds);
+          const subHeadIds = mapUserIdList(fc.subHeadIds);
+          const memberIds = mapUserIdList(fc.memberIds);
 
           const byId = await tx.floorConfig.findUnique({
             where: { id: fc.id },
@@ -1071,30 +1404,26 @@ export async function runOneClickNeonToSqliteMigration(params: {
         let aecCount = 0;
         for (const aec of snapshot.attendanceEventClones) {
           if (!aec.eventId) continue;
-          const evMeta = neonEventsById.get(String(aec.eventId));
+          const evDate = toNullableDate(aec.eventDate);
           await tx.attendanceEventClone.upsert({
             where: { eventId: String(aec.eventId) },
             update: {
-              isActive: Boolean(aec.isActive),
+              isActive: coerceBoolean(aec.isActive),
               startTime: toDate(aec.startTime),
               endTime: toDate(aec.endTime),
-              ...(evMeta
-                ? {
-                    eventTitle: evMeta.title,
-                    eventDate: evMeta.occasionDate,
-                    eventTime: evMeta.occasionTime,
-                    eventType: evMeta.eventType,
-                  }
-                : {}),
+              ...(aec.eventTitle ? { eventTitle: aec.eventTitle } : {}),
+              ...(evDate ? { eventDate: evDate } : {}),
+              ...(aec.eventTime ? { eventTime: aec.eventTime } : {}),
+              ...(aec.eventType ? { eventType: aec.eventType } : {}),
             },
             create: {
               id: aec.id,
               eventId: String(aec.eventId),
-              eventTitle: evMeta?.title ?? null,
-              eventDate: evMeta?.occasionDate ?? null,
-              eventTime: evMeta?.occasionTime ?? null,
-              eventType: evMeta?.eventType ?? null,
-              isActive: Boolean(aec.isActive),
+              eventTitle: aec.eventTitle ?? null,
+              eventDate: evDate,
+              eventTime: aec.eventTime ?? null,
+              eventType: aec.eventType ?? null,
+              isActive: coerceBoolean(aec.isActive),
               startTime: toDate(aec.startTime),
               endTime: toDate(aec.endTime),
               createdAt: toDate(aec.createdAt),
@@ -1117,12 +1446,15 @@ export async function runOneClickNeonToSqliteMigration(params: {
   const durationMs = Math.round(performance.now() - startedAt);
 
   await recordActivity({
-    action: "MIGRATION_COMPLETED",
-    summary: `Imported ${totalImported} records from legacy Neon database in ${(durationMs / 1000).toFixed(1)}s`,
+    action: "INVENTORY_SYNC_COMPLETED",
+    summary: `Synced ${totalImported} records from Inventory App (${sourceMode}) in ${(durationMs / 1000).toFixed(1)}s`,
     userId: params.actor.id,
     userName: params.actor.name,
     details: {
+      sourceMode,
+      sourceLabel,
       totalImported,
+      hallsProvisioned,
       durationMs,
       importedByTable,
     },
@@ -1130,44 +1462,49 @@ export async function runOneClickNeonToSqliteMigration(params: {
 
   return {
     ok: true,
+    sourceMode,
+    sourceLabel,
     durationMs,
     importedByTable,
     totalImported,
+    hallsProvisioned,
     warnings,
   };
 }
 
-export async function syncInitialPortalDataIfEmpty(): Promise<{
+export async function syncInitialPortalDataIfEmpty(options?: {
+  force?: boolean;
+}): Promise<{
   synced: boolean;
+  sourceMode?: InventorySyncSourceMode;
+  sourceLabel?: string;
   totalImported: number;
   usersSynced: number;
+  hallsProvisioned: number;
   durationMs: number;
 }> {
   const userCount = await db.user.count();
-  if (userCount > 0) {
+  if (userCount > 0 && !options?.force) {
     return {
       synced: false,
       totalImported: 0,
       usersSynced: userCount,
+      hallsProvisioned: 0,
       durationMs: 0,
     };
   }
 
-  const neonUrl = (process.env.NEON_DATABASE_URL || "").trim();
-  if (!neonUrl) {
-    throw new Error(
-      "NEON_DATABASE_URL is not configured in .env for initial database sync."
-    );
-  }
-
-  const res = await runOneClickNeonToSqliteMigration({
-    actor: { id: "system", name: "Initial Database Sync" },
+  const res = await syncPortalDataFromInventory({
+    actor: { id: "system", name: "Inventory App Sanction" },
   });
 
   return {
     synced: true,
+    sourceMode: res.sourceMode,
+    sourceLabel: res.sourceLabel,
     totalImported: res.totalImported,
     usersSynced: res.importedByTable.users ?? 0,
+    hallsProvisioned: res.hallsProvisioned,
     durationMs: res.durationMs,
   };
 }

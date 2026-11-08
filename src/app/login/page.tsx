@@ -26,8 +26,7 @@ async function LoginContent({
     );
   }
 
-  const canInitialSync =
-    userCount === 0 && Boolean(process.env.NEON_DATABASE_URL);
+  const canInitialSync = userCount === 0;
 
   return (
     <div className="flex min-h-screen w-full flex-col justify-between px-4 py-6 sm:px-8 lg:px-12">

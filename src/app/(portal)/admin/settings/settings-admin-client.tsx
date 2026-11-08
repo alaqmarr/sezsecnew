@@ -28,7 +28,6 @@ export function SettingsAdminClient({
   initialSmtp,
   initialBridgeHealth,
   dbHealth,
-  hasNeonUrl,
   actorEmail,
   recentLogs,
 }: {
@@ -50,7 +49,6 @@ export function SettingsAdminClient({
     journalMode: string;
     sizeKb: number;
   };
-  hasNeonUrl: boolean;
   actorEmail: string;
   recentLogs: Array<{
     id: string;
@@ -78,7 +76,7 @@ export function SettingsAdminClient({
   const [pushingUsers, setPushingUsers] = useState(false);
   const [testingSmtp, setTestingSmtp] = useState(false);
   const [syncingIts, setSyncingIts] = useState(false);
-  const [syncingNeon, setSyncingNeon] = useState(false);
+  const [syncingInventory, setSyncingInventory] = useState(false);
 
   async function handleSaveAll(e: React.FormEvent) {
     e.preventDefault();
@@ -173,22 +171,25 @@ export function SettingsAdminClient({
     }
   }
 
-  async function handleNeonSync() {
-    setSyncingNeon(true);
+  async function handleInventorySync() {
+    setSyncingInventory(true);
     try {
       const res = await fetch("/api/setup/sync", { method: "POST" });
       const data = await res.json();
       if (!res.ok) {
-        notify.error("Neon sync failed", data?.error || "Request failed");
+        notify.error(
+          "Inventory App sync failed",
+          data?.error || "Request failed"
+        );
         return;
       }
       notify.success(
-        "Read-Only Neon Sync Completed",
-        `Imported/updated ${data.totalImported ?? 0} records into SQLite WAL`
+        "Inventory App Sync Completed",
+        `Synced ${data.totalImported ?? 0} records from ${data.sourceMode === "loopback-bridge" ? "sezinv (:3333)" : "jamatevents.db"}`
       );
       router.refresh();
     } finally {
-      setSyncingNeon(false);
+      setSyncingInventory(false);
     }
   }
 
@@ -379,18 +380,16 @@ export function SettingsAdminClient({
               Align Member Usernames with 8-Digit ITS
             </Button>
 
-            {hasNeonUrl ? (
-              <Button
-                type="button"
-                variant="ghost"
-                className="w-full justify-start"
-                loading={syncingNeon}
-                onClick={handleNeonSync}
-                icon={<RefreshCw className="h-4 w-4" />}
-              >
-                Re-Run Read-Only Neon PostgreSQL Import
-              </Button>
-            ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              className="w-full justify-start"
+              loading={syncingInventory}
+              onClick={handleInventorySync}
+              icon={<RefreshCw className="h-4 w-4" />}
+            >
+              Pull &amp; Reconcile Records from Inventory App (:3333)
+            </Button>
           </div>
         </div>
 

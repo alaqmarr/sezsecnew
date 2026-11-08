@@ -56,7 +56,6 @@ export default async function SystemSettingsAdminPage() {
           journalMode: dbHealth.pragmas.journalMode,
           sizeKb: Math.round(dbHealth.pragmas.databaseSizeBytes / 1024),
         }}
-        hasNeonUrl={Boolean(process.env.NEON_DATABASE_URL)}
         actorEmail={actor.email || ""}
         recentLogs={serializedLogs}
       />

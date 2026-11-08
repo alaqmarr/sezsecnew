@@ -42,7 +42,7 @@ fi
 
 echo "[1/6] Runtime verified: Node.js $NODE_VERSION, npm v$NPM_VERSION"
 
-# 2. Environment (.env) Provisioning & Sibling Bridge Key Discovery
+# 2. Environment (.env) Provisioning & Sibling Inventory App Bridge Key Alignment
 if [ ! -f ".env" ]; then
   echo "[2/6] Creating .env from template with cryptographic secrets..."
   if [ -f ".env.example" ]; then
@@ -50,31 +50,43 @@ if [ ! -f ".env" ]; then
   else
     cat > ".env" <<'EOF'
 DATABASE_URL="file:./data/sezsecnew.db"
-NEON_DATABASE_URL=""
 AUTH_SECRET="replace-with-strong-random-secret"
 SEZSEC_BRIDGE_KEY="replace-with-strong-shared-bridge-key"
 JAMATEVENTS_INTERNAL_URL="http://127.0.0.1:3333"
 NEXT_PUBLIC_JAMATEVENTS_URL="http://localhost:3333"
 NEXT_PUBLIC_APP_URL="http://localhost:3334"
+PORT="3334"
 SMTP_EMAIL="info@sezsec.org"
 SMTP_PASSWORD=""
 UPI_ID="dbjtsez@idfcbank"
 UPI_PAYEE_NAME="Shabab Ul Eidiz Zahabi"
 EOF
   fi
+  echo "      Created initial .env template."
+else
+  echo "[2/6] Existing .env found — aligning companion Inventory App bridge config..."
+fi
 
-  node <<'NODE_EOF'
+node <<'NODE_EOF'
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
 let envText = fs.readFileSync(".env", "utf8");
 
-// Attempt to reuse SEZSEC_BRIDGE_KEY from sibling ../sezinv/.env or ../jamatevents/.env
+// Remove deprecated NEON_DATABASE_URL if present from earlier configuration
+if (/^\s*NEON_DATABASE_URL\s*=.*$/m.test(envText)) {
+  envText = envText.replace(/^\s*NEON_DATABASE_URL\s*=.*(?:\r?\n)?/gm, "");
+  console.log("      Removed deprecated NEON_DATABASE_URL from .env.");
+}
+
+// Discover SEZSEC_BRIDGE_KEY from sibling ../sezinv/.env or ../jamatevents/.env
 let sharedBridgeKey = "";
+let siblingEnvFound = false;
 for (const rel of ["../sezinv/.env", "../jamatevents/.env"]) {
   const candidate = path.resolve(process.cwd(), rel);
   if (fs.existsSync(candidate)) {
+    siblingEnvFound = true;
     const raw = fs.readFileSync(candidate, "utf8");
     const m = raw.match(/^\s*SEZSEC_BRIDGE_KEY\s*=\s*"?([^"#\r\n]+)"?/m);
     if (m && m[1].trim() && !m[1].includes("replace-with")) {
@@ -82,6 +94,11 @@ for (const rel of ["../sezinv/.env", "../jamatevents/.env"]) {
       break;
     }
   }
+}
+
+if (!sharedBridgeKey && siblingEnvFound) {
+  // Sibling Inventory App .env exists without an explicit SEZSEC_BRIDGE_KEY, so it uses default key
+  sharedBridgeKey = "sezsec-internal-bridge-key-2026";
 }
 
 const replacePlaceholder = (key, placeholder, explicitValue) => {
@@ -99,17 +116,21 @@ replacePlaceholder(
   sharedBridgeKey
 );
 
-fs.writeFileSync(".env", envText, { mode: 0o600 });
 if (sharedBridgeKey) {
-  console.log("      Matched SEZSEC_BRIDGE_KEY from sibling Bookings app (.env).");
+  if (/^\s*SEZSEC_BRIDGE_KEY\s*=/m.test(envText)) {
+    envText = envText.replace(
+      /^(\s*SEZSEC_BRIDGE_KEY\s*=\s*).*/m,
+      `$1"${sharedBridgeKey}"`
+    );
+  } else {
+    envText = envText.replace(/\s*$/, `\nSEZSEC_BRIDGE_KEY="${sharedBridgeKey}"\n`);
+  }
+  console.log("      Synchronized SEZSEC_BRIDGE_KEY with Inventory App (sezinv).");
 }
+
+fs.writeFileSync(".env", envText, { mode: 0o600 });
 NODE_EOF
-  chmod 600 ".env" 2>/dev/null || true
-  echo "      Created and secured .env (mode 600)."
-else
-  chmod 600 ".env" 2>/dev/null || true
-  echo "[2/6] Existing .env found — preserving configuration."
-fi
+chmod 600 ".env" 2>/dev/null || true
 
 # 3. Install Dependencies
 echo "[3/6] Installing project dependencies..."
@@ -123,8 +144,8 @@ else
   npm install --no-audit --no-fund
 fi
 
-# 4. Sanction Database Directory, Setup Schema & Enforce SQLite WAL Pragmas
-echo "[4/6] Sanctioning SQLite database and applying Prisma schema..."
+# 4. Sanction Database Directory, Setup Schema & Sync from Inventory App
+echo "[4/6] Sanctioning SQLite database and syncing from Inventory App (sezinv)..."
 
 DB_FILE_PATH="$(node <<'NODE_EOF'
 require("dotenv/config");
@@ -155,8 +176,8 @@ npx prisma generate
 echo "      Applying database schema (non-destructive)..."
 npx prisma db push
 
-echo "      Enforcing SQLite WAL mode, relational constraints & default modules..."
-npx tsx prisma/sanction-db.ts --sync-neon
+echo "      Enforcing SQLite WAL mode, constraints & syncing from Inventory App..."
+npx tsx prisma/sanction-db.ts --sync-inventory
 
 if [ "$DB_FILE_PATH" != ":memory:" ]; then
   for f in "$DB_FILE_PATH" "${DB_FILE_PATH}-wal" "${DB_FILE_PATH}-shm"; do

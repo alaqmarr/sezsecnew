@@ -87,8 +87,8 @@ export function LoginClientForm({
             First-Time Setup Detected
           </p>
           <p className="mt-0.5 text-xs text-[#5E4F4A]">
-            Local SQLite database has 0 accounts. Click below to import existing
-            SEZ accounts &amp; records safely in read-only mode.
+            Local SQLite database has 0 accounts. Click below to sync existing
+            SEZ accounts &amp; records directly from the Inventory App (:3333).
           </p>
           <Button
             variant="brass"
@@ -98,7 +98,7 @@ export function LoginClientForm({
             icon={<Database className="h-3.5 w-3.5" />}
             className="mt-2.5 w-full"
           >
-            Sync Existing SEZ Database
+            Sync from Inventory App (:3333)
           </Button>
         </div>
       ) : null}

@@ -1,15 +1,19 @@
 import "dotenv/config";
 import {
+  fetchBridgeHalls,
+  syncInboundBridgeHalls,
+} from "../src/modules/bridge/bridge.module";
+import {
   db,
   getDatabaseHealth,
   sqliteAdapterFactory,
   withWriteLock,
 } from "../src/modules/db/db.module";
+import { syncInitialPortalDataIfEmpty } from "../src/modules/migration/migration.module";
 import {
   DEFAULT_SEZSEC_MODULES,
   EVENT_CHARGES_MODULE_ID,
 } from "../src/modules/rbac/rbac.constants";
-import { syncInitialPortalDataIfEmpty } from "../src/modules/migration/migration.module";
 
 async function main() {
   console.log("── Sanctioning SEZSEC Portal SQLite Database ──");
@@ -90,15 +94,42 @@ async function main() {
     }
   });
 
-  if (process.argv.includes("--sync-neon") && process.env.NEON_DATABASE_URL) {
-    console.log("  • Checking initial Neon PostgreSQL read-only import...");
-    const syncRes = await syncInitialPortalDataIfEmpty();
-    if (syncRes.synced) {
-      console.log(
-        `  • Imported ${syncRes.totalImported} records (${syncRes.usersSynced} users) in ${syncRes.durationMs}ms`
-      );
-    } else {
-      console.log("  • Local users already present; skipping initial sync.");
+  const forceInventorySync =
+    process.argv.includes("--sync-inventory") ||
+    process.argv.includes("--force-sync");
+  const existingUsers = await db.user.count();
+
+  if (existingUsers === 0 || forceInventorySync) {
+    console.log("  • Syncing portal data from Inventory App (sezinv)...");
+    try {
+      const syncRes = await syncInitialPortalDataIfEmpty({
+        force: forceInventorySync,
+      });
+      if (syncRes.synced) {
+        console.log(`  • Sync source   : ${syncRes.sourceLabel}`);
+        console.log(
+          `  • Imported ${syncRes.totalImported} records (${syncRes.usersSynced} users) in ${syncRes.durationMs}ms`
+        );
+      } else {
+        console.log("  • Local users already present; skipping initial sync.");
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`  • [WARN] Inventory App sync deferred: ${msg}`);
+    }
+  } else {
+    try {
+      const halls = await fetchBridgeHalls();
+      if (halls.length > 0) {
+        const hallRes = await syncInboundBridgeHalls(halls);
+        if (hallRes.syncedCount > 0) {
+          console.log(
+            `  • Provisioned ${hallRes.syncedCount} new hall permission module(s) from Inventory App`
+          );
+        }
+      }
+    } catch {
+      // Loopback bridge optional during offline schema maintenance
     }
   }
 
