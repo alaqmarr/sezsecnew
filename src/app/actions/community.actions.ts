@@ -8,6 +8,7 @@ import { db, withWriteLock } from "@sezsec/db";
 import { recordActivity } from "@sezsec/logs";
 import { sendSystemEmail } from "@sezsec/notifications";
 import { hasUserPathAccess, requireServerSession } from "@sezsec/rbac/rbac.server";
+import { parseISTDateOnly } from "@sezsec/shared";
 
 async function assertPathOrAdmin(targetPath: string) {
   const session = await requireServerSession();
@@ -261,7 +262,11 @@ export async function saveBlogChronicleAction(input: {
       return { ok: false, error: "Title and content are required." };
     }
 
-    const pubDate = input.publishedAt ? new Date(input.publishedAt) : new Date();
+    const pubDate = input.publishedAt?.trim()
+      ? /^\d{4}-\d{2}-\d{2}$/.test(input.publishedAt.trim())
+        ? parseISTDateOnly(input.publishedAt)
+        : new Date(input.publishedAt)
+      : new Date();
     const safePubDate = Number.isNaN(pubDate.getTime()) ? new Date() : pubDate;
 
     const saved = await withWriteLock(() =>

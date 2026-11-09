@@ -6,6 +6,7 @@ import { getCurrentSessionUser, verifyEmailOtp } from "@sezsec/auth";
 import { syncUserByIdToJamatevents } from "@sezsec/bridge";
 import { db, withWriteLock } from "@sezsec/db";
 import { recordActivity } from "@sezsec/logs";
+import { parseISTDateOnly } from "@sezsec/shared";
 
 export async function updateOwnProfileDetailsAction(input: {
   name: string;
@@ -38,7 +39,7 @@ export async function updateOwnProfileDetailsAction(input: {
     }
   }
 
-  const parsedDob = input.dob ? new Date(input.dob) : null;
+  const parsedDob = input.dob?.trim() ? parseISTDateOnly(input.dob) : null;
 
   await withWriteLock(() =>
     db.user.update({

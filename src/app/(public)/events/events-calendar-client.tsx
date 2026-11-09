@@ -68,21 +68,21 @@ export function EventsCalendarClient({
   }, [filteredEvents]);
 
   const calendarCells = useMemo(() => {
-    const firstDayDow = new Date(viewYear, viewMonth, 1).getDay();
-    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+    const firstDayDow = new Date(Date.UTC(viewYear, viewMonth, 1)).getUTCDay();
+    const daysInMonth = new Date(Date.UTC(viewYear, viewMonth + 1, 0)).getUTCDate();
     const cells: Array<{
       dateKey: string;
       day: number;
       inCurrentMonth: boolean;
     }> = [];
 
-    const prevMonthDays = new Date(viewYear, viewMonth, 0).getDate();
+    const prevMonthDays = new Date(Date.UTC(viewYear, viewMonth, 0)).getUTCDate();
     for (let i = firstDayDow - 1; i >= 0; i--) {
       const d = prevMonthDays - i;
-      const dt = new Date(viewYear, viewMonth - 1, d);
-      const y = dt.getFullYear();
-      const m = String(dt.getMonth() + 1).padStart(2, "0");
-      const dd = String(dt.getDate()).padStart(2, "0");
+      const dt = new Date(Date.UTC(viewYear, viewMonth - 1, d));
+      const y = dt.getUTCFullYear();
+      const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(dt.getUTCDate()).padStart(2, "0");
       cells.push({ dateKey: `${y}-${m}-${dd}`, day: d, inCurrentMonth: false });
     }
 
@@ -98,10 +98,10 @@ export function EventsCalendarClient({
 
     const trailing = (7 - (cells.length % 7)) % 7;
     for (let d = 1; d <= trailing; d++) {
-      const dt = new Date(viewYear, viewMonth + 1, d);
-      const y = dt.getFullYear();
-      const m = String(dt.getMonth() + 1).padStart(2, "0");
-      const dd = String(dt.getDate()).padStart(2, "0");
+      const dt = new Date(Date.UTC(viewYear, viewMonth + 1, d));
+      const y = dt.getUTCFullYear();
+      const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(dt.getUTCDate()).padStart(2, "0");
       cells.push({ dateKey: `${y}-${m}-${dd}`, day: d, inCurrentMonth: false });
     }
 
@@ -113,7 +113,7 @@ export function EventsCalendarClient({
   );
   const lastOfMonthMisri = getMisriDate(
     `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(
-      new Date(viewYear, viewMonth + 1, 0).getDate()
+      new Date(Date.UTC(viewYear, viewMonth + 1, 0)).getUTCDate()
     ).padStart(2, "0")}`
   );
 
@@ -135,9 +135,9 @@ export function EventsCalendarClient({
     upcomingList.length === 0 && recentFallbackList.length > 0;
 
   function stepMonth(delta: number) {
-    const next = new Date(viewYear, viewMonth + delta, 1);
-    setViewYear(next.getFullYear());
-    setViewMonth(next.getMonth());
+    const totalMonths = viewYear * 12 + viewMonth + delta;
+    setViewYear(Math.floor(totalMonths / 12));
+    setViewMonth(((totalMonths % 12) + 12) % 12);
   }
 
   function jumpToToday() {

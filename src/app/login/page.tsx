@@ -1,13 +1,12 @@
-import React, { Suspense } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { getCurrentSessionUser } from "@sezsec/auth";
 import { db } from "@sezsec/db";
-import { FatimidRosette, PageLoader } from "@sezsec/ui";
+import { FatimidRosette } from "@sezsec/ui";
 import { LoginClientForm } from "./login-client";
 
-async function LoginContent({
+export default async function LoginPage({
   searchParams,
 }: {
   searchParams: Promise<{ callbackUrl?: string }>;
@@ -107,17 +106,5 @@ async function LoginContent({
         <span>Not yet a member? Apply via Join SEZ on the public portal.</span>
       </div>
     </div>
-  );
-}
-
-export default function LoginPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ callbackUrl?: string }>;
-}) {
-  return (
-    <Suspense fallback={<PageLoader label="Opening Sign In…" />}>
-      <LoginContent searchParams={searchParams} />
-    </Suspense>
   );
 }

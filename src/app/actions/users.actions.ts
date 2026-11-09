@@ -11,6 +11,7 @@ import { db, withWriteLock } from "@sezsec/db";
 import { recordActivity } from "@sezsec/logs";
 import { EVENT_CHARGES_MODULE_ID } from "@sezsec/rbac/rbac.constants";
 import { hasUserPathAccess, requireServerSession } from "@sezsec/rbac/rbac.server";
+import { parseISTDateOnly } from "@sezsec/shared";
 
 const ALLOWED_ROLES = new Set<Role>([
   "ADMIN",
@@ -192,7 +193,12 @@ export async function updateMemberAccountAction(input: {
       passwordHash = await bcrypt.hash(input.newPassword.trim(), 10);
     }
 
-    const parsedDob = input.dob ? new Date(input.dob) : undefined;
+    const parsedDob =
+      input.dob !== undefined
+        ? input.dob.trim()
+          ? parseISTDateOnly(input.dob)
+          : null
+        : undefined;
 
     await withWriteLock(() =>
       db.$transaction(async (tx) => {

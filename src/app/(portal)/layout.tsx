@@ -1,4 +1,4 @@
-import React, { Suspense } from "react";
+import React from "react";
 import { connection } from "next/server";
 import {
   getPublicJamateventsUrl,
@@ -9,11 +9,9 @@ import {
   requireServerSession,
 } from "@sezsec/rbac/rbac.server";
 import { getISTTodayString } from "@sezsec/shared";
-import { PageLoader, PortalShell } from "@sezsec/ui";
+import { PortalShell } from "@sezsec/ui";
 
-export const instant = false;
-
-async function PortalShellWrapper({
+export default async function PortalGroupLayout({
   children,
 }: {
   children: React.ReactNode;
@@ -36,17 +34,5 @@ async function PortalShellWrapper({
     >
       {children}
     </PortalShell>
-  );
-}
-
-export default function PortalGroupLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  return (
-    <Suspense fallback={<PageLoader label="Loading Member Portal…" />}>
-      <PortalShellWrapper>{children}</PortalShellWrapper>
-    </Suspense>
   );
 }

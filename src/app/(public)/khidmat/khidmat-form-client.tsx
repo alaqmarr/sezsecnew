@@ -1,11 +1,36 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useLayoutEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { CheckCircle2, Send } from "lucide-react";
 import { submitKhidmatRequestAction } from "@/app/actions/public.actions";
 import { Button, Input, notify } from "@sezsec/ui";
 
 export function KhidmatFormClient() {
+  const { bfcacheId } = useRouter();
+  const [resetNonce, setResetNonce] = useState(0);
+  const shouldResetOnHideRef = useRef(false);
+
+  useLayoutEffect(() => {
+    return () => {
+      if (shouldResetOnHideRef.current) {
+        shouldResetOnHideRef.current = false;
+        setResetNonce((n) => n + 1);
+      }
+    };
+  }, []);
+
+  return (
+    <KhidmatFormInner
+      key={`${bfcacheId}:${resetNonce}`}
+      onSubmitted={() => {
+        shouldResetOnHideRef.current = true;
+      }}
+    />
+  );
+}
+
+function KhidmatFormInner({ onSubmitted }: { onSubmitted: () => void }) {
   const [miqat, setMiqat] = useState("");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
@@ -27,6 +52,7 @@ export function KhidmatFormClient() {
         notify.error("Could not submit request", res.error);
         return;
       }
+      onSubmitted();
       notify.success(
         "Khidmat request submitted",
         "Our committee coordinator will review and get in touch."

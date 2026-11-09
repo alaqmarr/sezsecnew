@@ -8,7 +8,7 @@ import {
   UPDATE_THAAL_COUNT_MODULE_ID,
   VIEW_PRIVATE_EVENTS_MODULE_ID,
 } from "@sezsec/rbac/rbac.constants";
-import { getHallModuleId } from "@sezsec/shared";
+import { getHallModuleId, parseISTEventDateTime } from "@sezsec/shared";
 import type {
   BridgeConnectionHealth,
   BridgeEvent,
@@ -392,7 +392,7 @@ export async function pingJamateventsBridge(): Promise<BridgeConnectionHealth> {
   try {
     const res = await loopbackFetchJamatevents("/api/bridge/health", {
       method: "GET",
-      timeoutMs: 4000,
+      timeoutMs: 1500,
     });
     const latencyMs = Math.round((performance.now() - started) * 100) / 100;
     if (!res.ok) {
@@ -713,12 +713,21 @@ export async function syncInboundBridgeEventSnapshot(payload: {
     }
 
     if (payload.event) {
+      const nextEventDate = payload.event.occasionDate
+        ? /^\d{4}-\d{2}-\d{2}$/.test(payload.event.occasionDate.trim())
+          ? parseISTEventDateTime(
+              payload.event.occasionDate,
+              payload.event.occasionTime || clone.eventTime
+            )
+          : new Date(payload.event.occasionDate)
+        : undefined;
+
       await db.attendanceEventClone.update({
         where: { eventId: payload.eventId },
         data: {
           ...(payload.event.title ? { eventTitle: payload.event.title } : {}),
-          ...(payload.event.occasionDate
-            ? { eventDate: new Date(payload.event.occasionDate) }
+          ...(nextEventDate && !Number.isNaN(nextEventDate.getTime())
+            ? { eventDate: nextEventDate }
             : {}),
           ...(payload.event.occasionTime
             ? { eventTime: payload.event.occasionTime }

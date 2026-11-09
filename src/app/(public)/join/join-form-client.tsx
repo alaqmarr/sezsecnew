@@ -1,11 +1,36 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useLayoutEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { CheckCircle2, UserPlus } from "lucide-react";
 import { submitMemberRegistrationAction } from "@/app/actions/public.actions";
 import { Button, Input, Select, notify } from "@sezsec/ui";
 
 export function JoinFormClient() {
+  const { bfcacheId } = useRouter();
+  const [resetNonce, setResetNonce] = useState(0);
+  const shouldResetOnHideRef = useRef(false);
+
+  useLayoutEffect(() => {
+    return () => {
+      if (shouldResetOnHideRef.current) {
+        shouldResetOnHideRef.current = false;
+        setResetNonce((n) => n + 1);
+      }
+    };
+  }, []);
+
+  return (
+    <JoinFormInner
+      key={`${bfcacheId}:${resetNonce}`}
+      onSubmitted={() => {
+        shouldResetOnHideRef.current = true;
+      }}
+    />
+  );
+}
+
+function JoinFormInner({ onSubmitted }: { onSubmitted: () => void }) {
   const [title, setTitle] = useState("Brother");
   const [name, setName] = useState("");
   const [its, setIts] = useState("");
@@ -41,6 +66,7 @@ export function JoinFormClient() {
         notify.error("Registration failed", res.error);
         return;
       }
+      onSubmitted();
       notify.success("Application submitted to SEZ Secunderabad");
       setDone(true);
     } finally {

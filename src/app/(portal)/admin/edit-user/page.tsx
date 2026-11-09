@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Users } from "lucide-react";
 import { db } from "@sezsec/db";
 import { requireServerPathAccess } from "@sezsec/rbac/rbac.server";
+import { toISTDateKey } from "@sezsec/shared";
 import { Button, PageHeader } from "@sezsec/ui";
 import { EditUserClient } from "./edit-user-client";
 
@@ -31,7 +32,7 @@ export default async function EditUserAdminPage({
     mobile: u.mobile || "",
     role: u.role,
     monthlyFee: u.feeConfig?.amount ?? 0,
-    dob: u.dob ? u.dob.toISOString().slice(0, 10) : "",
+    dob: u.dob ? toISTDateKey(u.dob) : "",
     occupation: u.occupation || "",
     quranHifz: u.quranHifz || "",
     sports: u.sports || "",

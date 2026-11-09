@@ -5,7 +5,7 @@ import { getCurrentSessionUser } from "@sezsec/auth";
 import { fetchBridgeEventById, updateBridgeEventThaals } from "@sezsec/bridge";
 import { db, withWriteLock } from "@sezsec/db";
 import { UPDATE_THAAL_COUNT_MODULE_ID } from "@sezsec/rbac/rbac.constants";
-import { getHallModuleId } from "@sezsec/shared";
+import { getHallModuleId, parseISTDateOnly } from "@sezsec/shared";
 
 export async function submitKhidmatRequestAction(input: {
   miqat: string;
@@ -16,7 +16,9 @@ export async function submitKhidmatRequestAction(input: {
   const miqat = input.miqat.trim();
   const name = input.name.trim();
   const phone = input.phone.trim();
-  const parsedDate = new Date(input.date);
+  const parsedDate = input.date?.trim()
+    ? parseISTDateOnly(input.date)
+    : new Date("invalid");
 
   if (!miqat || !name || !phone || Number.isNaN(parsedDate.getTime())) {
     return { ok: false, error: "Please complete all required fields." };
@@ -55,7 +57,9 @@ export async function submitMemberRegistrationAction(input: {
   const name = input.name.trim();
   const email = input.email.trim().toLowerCase();
   const phone = input.phone.trim();
-  const dob = new Date(input.dob);
+  const dob = input.dob?.trim()
+    ? parseISTDateOnly(input.dob)
+    : new Date("invalid");
 
   if (!/^\d{8}$/.test(its)) {
     return { ok: false, error: "ITS number must be an exact 8-digit number." };

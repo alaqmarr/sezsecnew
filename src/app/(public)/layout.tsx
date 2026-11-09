@@ -1,10 +1,10 @@
-import React, { Suspense } from "react";
+import React from "react";
 import { connection } from "next/server";
 import { getCurrentSessionUser } from "@sezsec/auth";
 import { getISTTodayString } from "@sezsec/shared";
-import { PageLoader, PublicShell } from "@sezsec/ui";
+import { PublicShell } from "@sezsec/ui";
 
-async function PublicShellWrapper({
+export default async function PublicGroupLayout({
   children,
 }: {
   children: React.ReactNode;
@@ -17,17 +17,5 @@ async function PublicShellWrapper({
     <PublicShell todayIso={todayIso} user={user}>
       {children}
     </PublicShell>
-  );
-}
-
-export default function PublicGroupLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  return (
-    <Suspense fallback={<PageLoader label="Loading SEZ Secunderabad…" />}>
-      <PublicShellWrapper>{children}</PublicShellWrapper>
-    </Suspense>
   );
 }

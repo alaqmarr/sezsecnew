@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Save } from "lucide-react";
 import { saveBlogChronicleAction } from "@/app/actions/community.actions";
@@ -18,6 +18,37 @@ export function BlogEditorClient({
   initialBlog,
 }: {
   initialBlog: EditableChronicle;
+}) {
+  const { bfcacheId } = useRouter();
+  const [resetNonce, setResetNonce] = useState(0);
+  const shouldResetOnHideRef = useRef(false);
+
+  useLayoutEffect(() => {
+    return () => {
+      if (shouldResetOnHideRef.current) {
+        shouldResetOnHideRef.current = false;
+        setResetNonce((n) => n + 1);
+      }
+    };
+  }, []);
+
+  return (
+    <BlogEditorFormInner
+      key={`${bfcacheId}:${initialBlog.id ?? "new"}:${resetNonce}`}
+      initialBlog={initialBlog}
+      onSubmitted={() => {
+        shouldResetOnHideRef.current = true;
+      }}
+    />
+  );
+}
+
+function BlogEditorFormInner({
+  initialBlog,
+  onSubmitted,
+}: {
+  initialBlog: EditableChronicle;
+  onSubmitted: () => void;
 }) {
   const router = useRouter();
   const [title, setTitle] = useState(initialBlog.title);
@@ -45,9 +76,9 @@ export function BlogEditorClient({
         notify.error("Could not publish chronicle", res.error);
         return;
       }
+      onSubmitted();
       notify.success("Chronicle published");
       router.push("/admin/blogs");
-      router.refresh();
     } finally {
       setSaving(false);
     }

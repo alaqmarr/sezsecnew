@@ -3,6 +3,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { db } from "@sezsec/db";
 import { requireServerPathAccess } from "@sezsec/rbac/rbac.server";
+import { getISTTodayString, toISTDateKey } from "@sezsec/shared";
 import { Button, PageHeader } from "@sezsec/ui";
 import { BlogEditorClient } from "./blog-editor-client";
 
@@ -46,13 +47,13 @@ export default async function BlogComposerAdminPage({
                 title: existing.title,
                 author: existing.author,
                 content: existing.content,
-                publishedDate: existing.publishedAt.toISOString().slice(0, 10),
+                publishedDate: toISTDateKey(existing.publishedAt),
               }
             : {
                 title: "",
                 author: actor.name || "SEZ Secunderabad",
                 content: "",
-                publishedDate: new Date().toISOString().slice(0, 10),
+                publishedDate: getISTTodayString(),
               }
         }
       />
